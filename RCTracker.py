@@ -1,5 +1,5 @@
 '''
-ArduinoTracker
+RC Tracker
 ==============
 
 Uses OpenCV mean-shift based color tracking.
@@ -10,9 +10,7 @@ is marked, along with the approximate axis of orientation.
 
 Usage:
 ------
-    ArduinoTracker.py [<video source>] [<serial port>] [<baud rate>]
-
-    Baud rate is 115200 by default.
+    RCTracker.py [<video source>]
 
     After selecting object to track, click to choose destination.
     A red dot will mark the intended destination, connected to the center 
@@ -25,7 +23,7 @@ import cv2
 import numpy as np
 import math
 
-from RCcontrol import top_block
+from RCControl import top_block
 
 class RCTracker(object):
     def __init__(self, video_src):
@@ -40,7 +38,6 @@ class RCTracker(object):
         self.dest = None
         self.state = 'Idle'
         self.move_dir = 'up' # default move direction forward
-        self.prev_angle = 0
         self.prev_dist = 0
         self.counter = 0
         self.tb = None
@@ -54,7 +51,7 @@ class RCTracker(object):
             self.drag_start = (x, y)
             if self.tracking_state == 1:
                 self.dest = (x,y)
-                self.state = 'Turning'
+                self.state = 'Command Turn'
             else:
                 self.tracking_state = 0
 
@@ -85,7 +82,7 @@ class RCTracker(object):
             if abs(diff) < 10 or abs(diff) > 170:
                 self.state = 'Determine Moving'
             else:
-                self.tb = self.sendCommand('upleft')
+                self.tb = self.sendCommand('upright')
                 self.state = 'Turning'
 
         elif self.state == 'Turning':
@@ -94,15 +91,21 @@ class RCTracker(object):
                 self.counter = 0
                 self.tb.stop()
                 self.tb = None
-                self.state = 'Determine Moving'
-            elif self.counter == 10:
+                self.state = 'Waiting'
+            elif self.counter == 8:
                 self.counter = 0
                 self.tb.stop()
                 self.tb = None
+                self.state = 'Turning Stop'
+
+        elif self.state == 'Turning Stop':
+            self.counter += 1
+            if self.counter == 10:
+                self.counter = 0
                 self.state = 'Command Correct'
 
-        elif self.state == 'Command Corect':
-            self.tb = self.sendCommand('downright')
+        elif self.state == 'Command Correct':
+            self.tb = self.sendCommand('downleft')
             self.state = 'Correcting'
         
         elif self.state == 'Correcting':
@@ -111,12 +114,24 @@ class RCTracker(object):
                 self.counter = 0
                 self.tb.stop()
                 self.tb = None
-                self.state = 'Determine Moving'
-            elif self.counter == 14:
+                self.state = 'Waiting'
+            elif self.counter == 8:
                 self.counter = 0
                 self.tb.stop()
                 self.tb = None
+                self.state = 'Correcting Stop'
+
+        elif self.state == 'Correcting Stop':
+            self.counter += 1
+            if self.counter == 10:
+                self.counter = 0
                 self.state = 'Command Turn'
+
+        elif self.state == 'Waiting':
+            self.counter += 1
+            if self.counter == 20:
+                self.counter = 0
+                self.state = 'Determine Moving'
 
         elif self.state == 'Determine Moving':
             self.prev_dist = self.dist(center, self.dest)
@@ -125,7 +140,8 @@ class RCTracker(object):
 
         elif self.state == 'Determine Moving: Waiting':
             self.counter += 1
-            if self.counter == 8:
+            if self.counter == 10:
+                self.counter = 0
                 self.tb.stop()
                 self.tb = None
                 d = self.dist(center, self.dest)
@@ -135,18 +151,29 @@ class RCTracker(object):
                     else:
                         self.move_dir = 'up'
                 self.state = 'Command Move'
-                self.counter = 0
 
         elif self.state == 'Command Move':
             self.tb = self.sendCommand(self.move_dir)
             self.state = 'Moving'
 
         elif self.state == 'Moving':
+            self.counter += 1
             d = self.dist(center, self.dest)
-            if d < 200:
+            if d < 150:
                 self.tb.stop()
                 self.tb = None
                 self.state = 'Command Brake'
+            elif self.counter == 8:
+                self.counter = 0
+                self.tb.stop()
+                self.tb = None
+                self.state = 'Moving Stop'
+
+        elif self.state == 'Moving Stop':
+            self.counter += 1
+            if self.counter == 10:
+                self.counter = 0
+                self.state = 'Command Move'
 
         elif self.state == 'Command Brake':
             if self.move_dir == 'up':
@@ -232,7 +259,7 @@ class RCTracker(object):
                     print(track_box)
 
 
-                # Arduino calculations and movement
+                # RC calculations and movement
                 if self.dest:
                     # Calculate angle difference
                     # Note that angles will be measured from horizontal and in degrees
@@ -258,7 +285,6 @@ class RCTracker(object):
             if ch == 27:
                 break
 
-        # self.robot.sendCommand('s')
         cv2.destroyAllWindows()
 
     def sendCommand(self, command):
