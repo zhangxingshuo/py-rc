@@ -24,7 +24,8 @@ Usage:
 import cv2
 import numpy as np
 import math
-import time
+
+from RCcontrol import top_block
 
 class RCTracker(object):
     def __init__(self, video_src):
@@ -37,38 +38,36 @@ class RCTracker(object):
         self.drag_start = None
         self.tracking_state = 0
         self.dest = None
-        self.state = 'Servo: Pivot'
-        self.pivot_dir = 'l' # default pivot direction left
-        self.move_dir = 'f' # default move direction forward
+        self.state = 'Idle'
+        self.move_dir = 'up' # default move direction forward
         self.prev_angle = 0
         self.prev_dist = 0
         self.counter = 0
+        self.tb = None
 
     def mouse(self, event, x, y, flags, param):
         '''
         Actions on mouse click.
         '''
+
         if event == cv2.EVENT_LBUTTONDOWN:
             self.drag_start = (x, y)
             if self.tracking_state == 1:
                 self.dest = (x,y)
-                self.state = 'Idle'
+                self.state = 'Turning'
             else:
                 self.tracking_state = 0
 
-        if self.drag_start:
-            if flags & cv2.EVENT_FLAG_LBUTTON:
-                h, w = self.frame.shape[:2]
-                xo, yo = self.drag_start
-                x0, y0 = np.maximum(0, np.minimum([xo, yo], [x, y]))
-                x1, y1 = np.minimum([w, h], np.maximum([xo, yo], [x, y]))
-                self.selection = None
-                if x1-x0 > 0 and y1-y0 > 0:
-                    self.selection = (x0, y0, x1, y1)
-            else:
-                self.drag_start = None
-                if self.selection is not None:
-                    self.tracking_state = 1
+        elif event == cv2.EVENT_LBUTTONUP:
+            h, w = self.frame.shape[:2]
+            xo, yo = self.drag_start
+            x0, y0 = np.maximum(0, np.minimum([xo, yo], [x, y]))
+            x1, y1 = np.minimum([w, h], np.maximum([xo, yo], [x, y]))
+            self.selection = None
+            if x1-x0 > 0 and y1-y0 > 0:
+                self.selection = (x0, y0, x1, y1)
+                self.tracking_state = 1
+
 
     def dist(self, pt1, pt2):
         '''
@@ -76,98 +75,93 @@ class RCTracker(object):
         '''
         return ((pt1[0] - pt2[0])**2 + (pt1[1] - pt2[1])**2)**0.5
 
-    # def doAction(self, diff, center):
-    #     '''
-    #     Handle actions and state changes
-    #     '''
+    def doAction(self, diff, center):
+        '''
+        Handle actions and state changes
+        '''
+        print(self.state)
 
-    #     # Test default direction
-    #     if self.state == 'Servo: Pivot':
-    #         self.prev_angle = diff
-    #         self.robot.sendCommand(self.pivot_dir)
-    #         self.state = 'Pivot: Wait'
+        if self.state == 'Command Turn':
+            if abs(diff) < 10 or abs(diff) > 170:
+                self.state = 'Determine Moving'
+            else:
+                self.tb = self.sendCommand('upleft')
+                self.state = 'Turning'
 
-    #     # Wait 4 cycles
-    #     elif self.state == 'Pivot: Wait':
-    #         self.counter += 1
-    #         if self.counter == 4:
-    #             self.counter = 0
-    #             self.robot.sendCommand('s')
-    #             self.state = 'Determine Direction'
+        elif self.state == 'Turning':
+            self.counter += 1
+            if abs(diff) < 10 or abs(diff) > 170:
+                self.counter = 0
+                self.tb.stop()
+                self.tb = None
+                self.state = 'Determine Moving'
+            elif self.counter == 10:
+                self.counter = 0
+                self.tb.stop()
+                self.tb = None
+                self.state = 'Command Correct'
 
-    #     # If default pivot direction wrong, change direction
-    #     elif self.state == 'Determine Direction':
-    #         if (
-    #                 (abs(diff) > abs(self.prev_angle) and abs(self.prev_angle) < 90) or 
-    #                 (abs(diff) < abs(self.prev_angle) and abs(self.prev_angle) > 90)  
-    #             ):
-    #             if self.pivot_dir == 'l':
-    #                 self.pivot_dir = 'r'
-    #             else:
-    #                 self.pivot_dir = 'l'
-    #         self.robot.sendCommand(self.pivot_dir)
-    #         self.state = 'Turning'
+        elif self.state == 'Command Corect':
+            self.tb = self.sendCommand('downright')
+            self.state = 'Correcting'
+        
+        elif self.state == 'Correcting':
+            self.counter += 1
+            if abs(diff) < 10 or abs(diff) > 170:
+                self.counter = 0
+                self.tb.stop()
+                self.tb = None
+                self.state = 'Determine Moving'
+            elif self.counter == 14:
+                self.counter = 0
+                self.tb.stop()
+                self.tb = None
+                self.state = 'Command Turn'
 
-    #     # Continue turning until angle between lines is small
-    #     elif self.state == 'Turning':
-    #         d = self.dist(center, self.dest)
-    #         if d < 50:
-    #             self.state = 'Done'
-    #             self.robot.sendCommand('s')
-    #         if abs(diff) < 8 or abs(diff) > 172:
-    #             self.state = 'Correct'
-    #             self.robot.sendCommand('s')
+        elif self.state == 'Determine Moving':
+            self.prev_dist = self.dist(center, self.dest)
+            self.tb = self.sendCommand(self.move_dir)
+            self.state = 'Determine Moving: Waiting'
 
-    #     # Correc the angle slightly
-    #     elif self.state == 'Correct':
-    #         if self.pivot_dir == 'l':
-    #             self.robot.sendCommand('r')
-    #         else:
-    #             self.robot.sendCommand('l')
-    #         self.state = 'Correct: Wait'
+        elif self.state == 'Determine Moving: Waiting':
+            self.counter += 1
+            if self.counter == 8:
+                self.tb.stop()
+                self.tb = None
+                d = self.dist(center, self.dest)
+                if d >= self.prev_dist:
+                    if self.move_dir == 'up':
+                        self.move_dir = 'down'
+                    else:
+                        self.move_dir = 'up'
+                self.state = 'Command Move'
+                self.counter = 0
 
-    #     # Wait 3 cycles
-    #     elif self.state == 'Correct: Wait':
-    #         self.counter += 1
-    #         if self.counter == 3:
-    #             self.counter = 0
-    #             self.robot.sendCommand('s')
-    #             self.state = 'Servo: Move'
+        elif self.state == 'Command Move':
+            self.tb = self.sendCommand(self.move_dir)
+            self.state = 'Moving'
 
-    #     # Test default movement direction
-    #     elif self.state == 'Servo: Move':
-    #         self.prev_dist = self.dist(center, self.dest)
-    #         self.robot.sendCommand(self.move_dir)
-    #         self.state = 'Move: Wait'
+        elif self.state == 'Moving':
+            d = self.dist(center, self.dest)
+            if d < 200:
+                self.tb.stop()
+                self.tb = None
+                self.state = 'Command Brake'
 
-    #     # Wait 6 cycles -- Movement direction is more critical, so wait longer
-    #     elif self.state == 'Move: Wait':
-    #         self.counter += 1
-    #         if self.counter == 6:
-    #             self.counter = 0
-    #             self.robot.sendCommand('s')
-    #             self.state = 'Determine Motion'
+        elif self.state == 'Command Brake':
+            if self.move_dir == 'up':
+                self.tb = self.sendCommand('down')
+            else:
+                self.tb = self.sendCommand('up')
+            self.state = 'Braking'
 
-    #     # If movement direction wrong, change direction
-    #     elif self.state == 'Determine Motion':
-    #         d = self.dist(center, self.dest)
-    #         if d > self.prev_dist:
-    #             if self.move_dir == 'f':
-    #                 self.move_dir = 'b'
-    #             else:
-    #                 self.move_dir = 'f'
-    #         self.robot.sendCommand(self.move_dir)
-    #         self.state = 'Moving'
-
-    #     # Move until distance is small or if angle becomes too large
-    #     elif self.state == 'Moving':
-    #         if abs(diff) > 45 and abs(diff) < 135:
-    #             self.state = 'Servo: Pivot'
-    #             self.robot.sendCommand('s')
-    #         d = self.dist(center, self.dest)
-    #         if d < 50:
-    #             self.robot.sendCommand('s')
-    #             self.state = 'Done'
+        elif self.state == 'Braking':
+            self.counter += 1
+            if self.counter == 6:
+                self.tb.stop()
+                self.tb = None
+                self.state = 'Done'
+                self.counter = 0
 
 
     def run(self):
@@ -255,7 +249,7 @@ class RCTracker(object):
                     if diff > 180:
                         diff = 180 - diff
 
-                    # self.doAction(diff, center)
+                    self.doAction(diff, center)
 
             cv2.imshow('RC Tracker', vis)
 
@@ -266,6 +260,11 @@ class RCTracker(object):
 
         # self.robot.sendCommand('s')
         cv2.destroyAllWindows()
+
+    def sendCommand(self, command):
+        tb = top_block(command)
+        tb.start()
+        return tb
 
 
 if __name__ == '__main__':
